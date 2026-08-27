@@ -305,6 +305,27 @@
   @media (prefers-reduced-motion: reduce){
     .view{ animation:none !important; }
   }
+
+  /* ---------- итоги из Свода (added) ---------- */
+  .fin-label{ font-size:12px; color:#7f97b3; letter-spacing:.02em; margin:0 0 12px 2px; }
+
+  /* ---------- sync indicator (added) ---------- */
+  .topbar-right{ display:flex; align-items:center; }
+  .sync-row{ display:flex; align-items:center; gap:5px; margin-top:2px; }
+  .sync-dot{ width:6px; height:6px; border-radius:50%; background:#8a9bb0; flex:none; transition:background .2s; }
+  .sync-dot.load{ background:#2a63e4; animation:syncPulse .9s ease-in-out infinite; }
+  .sync-dot.ok{ background:#2fa36b; }
+  .sync-dot.err{ background:#d6483a; }
+  @keyframes syncPulse{ 0%,100%{opacity:1} 50%{opacity:.2} }
+  .sync-txt{ font-size:11px; color:#8a9bb0; }
+  .refresh-btn{ -webkit-appearance:none; appearance:none; border:0; background:transparent; padding:7px; margin:-7px -5px -7px 4px; cursor:pointer; color:#7f97b3; line-height:0; border-radius:10px; }
+  .refresh-btn:active{ background:rgba(127,151,179,.14); }
+  .refresh-btn svg{ width:17px; height:17px; }
+  .refresh-btn.spin svg{ animation:ritmSpin .8s linear infinite; }
+  @keyframes ritmSpin{ to{ transform:rotate(360deg) } }
+  @media (prefers-reduced-motion: reduce){
+    .sync-dot.load, .refresh-btn.spin svg{ animation:none !important; }
+  }
 </style>
 
 <div class="phone">
@@ -316,9 +337,15 @@
       <div>
         <div class="brand-name">Ритм</div>
         <div class="brand-sub" id="todayLabel"></div>
+        <div class="sync-row"><span class="sync-dot" id="syncDot"></span><span class="sync-txt" id="syncTxt">—</span></div>
       </div>
     </div>
-    <div class="topbar-stat" id="topStat"></div>
+    <div class="topbar-right">
+      <div class="topbar-stat" id="topStat"></div>
+      <button class="refresh-btn" id="refreshBtn" type="button" aria-label="Обновить">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+    </div>
   </header>
 
   <main class="content" id="content">
@@ -357,6 +384,7 @@
     <!-- ================= FINANCE ================= -->
     <section class="view" id="view-finance">
       <div class="chip-row" id="finPeriods"></div>
+      <div class="fin-label" id="finLabel" style="display:none"></div>
 
       <div class="stat-row">
         <div class="card stat-card income"><div class="lbl">Доходы</div><div class="val tabular" id="statIncome"></div></div>
@@ -369,8 +397,10 @@
         <div class="card bars" id="catBars" style="padding:14px;"></div>
       </div>
 
-      <h2 class="section-title">Операции</h2>
-      <div class="task-list" id="txList"></div>
+      <div id="txWrap">
+        <h2 class="section-title">Операции</h2>
+        <div class="task-list" id="txList"></div>
+      </div>
     </section>
 
   </main>
@@ -392,6 +422,26 @@
     </div>
   </nav>
 </div>
+
+<!-- =========================================================================
+     НАСТРОЙКА СИНХРОНИЗАЦИИ С n8n
+     apiUrl   — Production URL вебхука из воркфлоу "MiniApp API"
+                (например https://xxx.app.n8n.cloud/webhook/miniapp-data)
+     apiToken — тот же секрет, что в Code-ноде "Normalize" в n8n
+     Пока apiUrl пустой — приложение показывает демо-данные.
+     ========================================================================= -->
+<script>
+window.RITM_CONFIG = {
+  apiUrl:         "https://hanzo17.app.n8n.cloud/webhook/miniapp-data",
+  apiToken:       "0dmNcaeyy79Nfkjhm4fMwPZXyz0E3WG2",
+  autoRefreshSec: 60,
+
+  // "svod"         — цифры берутся из листа «Свод» (Доход / Расход)
+  // "transactions" — считаются из листа «Транзакции»,
+  //                  тогда работают ещё периоды, категории и список операций
+  financeSource:  "svod"
+};
+</script>
 
 <script>
 (function(){
@@ -458,13 +508,25 @@
     };
   }
 
-  var STORE_KEY = 'ritm_state_v1';
+  var STORE_KEY = 'ritm_state_v2';
+  var CFG = window.RITM_CONFIG || {};
+  var API_URL = String(CFG.apiUrl || '').trim();
+  var API_TOKEN = String(CFG.apiToken || '');
+  var FIN_SOURCE = (CFG.financeSource === 'transactions') ? 'transactions' : 'svod';
+
+  function useTotals(){ return FIN_SOURCE === 'svod' && !!state.totals; }
+
+  function emptyState(){ var s = seedState(); s.tasks = []; s.events = []; s.tx = []; return s; }
+
   var state;
   try{
     var raw = localStorage.getItem(STORE_KEY);
-    state = raw ? JSON.parse(raw) : seedState();
+    state = raw ? JSON.parse(raw) : (API_URL ? emptyState() : seedState());
     if (!state.ui) state.ui = seedState().ui;
-  }catch(e){ state = seedState(); }
+  }catch(e){ state = API_URL ? emptyState() : seedState(); }
+  if (!Array.isArray(state.tasks))  state.tasks  = [];
+  if (!Array.isArray(state.events)) state.events = [];
+  if (!Array.isArray(state.tx))     state.tx     = [];
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){}
 
   function saveUI(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){} }
@@ -484,7 +546,10 @@
       }).length;
       stat.innerHTML = '<div class="num tabular">'+cnt+'</div><div class="lbl">событий</div>';
     } else {
-      var bal = state.tx.reduce(function(s,x){ return s + (x.type==='income'? x.amount : -x.amount); },0);
+      var tot = useTotals() ? state.totals : null;
+      var bal = tot
+        ? (tot.income - tot.expense)
+        : state.tx.reduce(function(s,x){ return s + (x.type==='income'? x.amount : -x.amount); },0);
       stat.innerHTML = '<div class="num tabular">'+fmtMoney(bal)+'</div><div class="lbl">баланс</div>';
     }
   }
@@ -646,6 +711,7 @@
   /* ================= FINANCE (display + period filter only) ================= */
   var FIN_PERIODS = [ ['week','Неделя'], ['month','Месяц'], ['year','Год'], ['all','Всё время'] ];
   var finPeriodsEl = document.getElementById('finPeriods');
+  var finLabelEl   = document.getElementById('finLabel');
   function renderFinPeriods(){
     finPeriodsEl.innerHTML = FIN_PERIODS.map(function(p){
       return '<button class="chip'+(state.ui.finPeriod===p[0]?' active':'')+'" data-period="'+p[0]+'">'+p[1]+'</button>';
@@ -670,9 +736,26 @@
   }
 
   function renderFinance(){
-    var items = filteredTx();
-    var income = items.filter(function(x){return x.type==='income';}).reduce(function(s,x){return s+x.amount;},0);
-    var expense = items.filter(function(x){return x.type==='expense';}).reduce(function(s,x){return s+x.amount;},0);
+    var totals = useTotals() ? state.totals : null;
+    var items  = totals ? [] : filteredTx();
+    var income, expense;
+
+    if (totals){
+      /* режим «Свод»: готовые итоги, фильтровать по периодам нечего */
+      finPeriodsEl.style.display = 'none';
+      if (finLabelEl){
+        finLabelEl.style.display = '';
+        finLabelEl.textContent = totals.label ? 'Итоги · ' + totals.label : 'Итоги';
+      }
+      income  = totals.income;
+      expense = totals.expense;
+    } else {
+      finPeriodsEl.style.display = '';
+      if (finLabelEl) finLabelEl.style.display = 'none';
+      income  = items.filter(function(x){return x.type==='income';}).reduce(function(s,x){return s+x.amount;},0);
+      expense = items.filter(function(x){return x.type==='expense';}).reduce(function(s,x){return s+x.amount;},0);
+    }
+
     document.getElementById('statIncome').textContent = fmtMoney(income);
     document.getElementById('statExpense').textContent = fmtMoney(expense);
     document.getElementById('statBalance').textContent = fmtMoney(income-expense);
@@ -694,7 +777,14 @@
       }).join('');
     }
 
-    var listEl = document.getElementById('txList');
+    var listEl   = document.getElementById('txList');
+    var txWrapEl = document.getElementById('txWrap');
+    if (totals){
+      /* в Своде нет отдельных операций — прячем блок целиком */
+      if (txWrapEl) txWrapEl.style.display = 'none';
+      return;
+    }
+    if (txWrapEl) txWrapEl.style.display = '';
     var sorted = items.slice().sort(function(a,b){ return a.date<b.date?1:(a.date>b.date?-1:0); });
     if (!sorted.length){
       listEl.innerHTML = '<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="14" rx="2.5"/><path d="M2 10h20M6 15h4"/></svg><span>Операций нет</span></div>';
@@ -716,6 +806,125 @@
     listEl.innerHTML = html;
   }
 
+  /* ================= СИНХРОНИЗАЦИЯ: n8n -> мини-приложение ================= */
+  var syncDot    = document.getElementById('syncDot');
+  var syncTxt    = document.getElementById('syncTxt');
+  var refreshBtn = document.getElementById('refreshBtn');
+  var syncing    = false;
+
+  function setSync(cls, text){
+    if (syncDot) syncDot.className = 'sync-dot' + (cls ? ' ' + cls : '');
+    if (syncTxt) syncTxt.textContent = text;
+    if (refreshBtn) refreshBtn.classList.toggle('spin', cls === 'load');
+  }
+  function hhmm(ts){
+    var d = new Date(ts);
+    return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+  }
+  function isDate(s){ return /^\d{4}-\d{2}-\d{2}$/.test(s); }
+  function arr(v){ return Array.isArray(v) ? v : []; }
+
+  /* Сервер может ошибаться — приводим всё к формату, который ждёт UI */
+  function normalize(d){
+    return {
+      tasks: arr(d.tasks).map(function(t){
+        return {
+          id:       String(t.id || uid()),
+          text:     String(t.text || t.title || '').trim(),
+          done:     !!t.done,
+          priority: (t.priority === 'high' || t.priority === 'low') ? t.priority : 'med',
+          due:      (t.due && isDate(String(t.due).slice(0,10))) ? String(t.due).slice(0,10) : null
+        };
+      }).filter(function(t){ return t.text; }),
+
+      events: arr(d.events).map(function(e){
+        return {
+          id:    String(e.id || uid()),
+          title: String(e.title || e.summary || '').trim(),
+          date:  String(e.date || '').slice(0,10),
+          time:  e.time ? String(e.time).slice(0,5) : '',
+          notes: String(e.notes || '')
+        };
+      }).filter(function(e){ return e.title && isDate(e.date); }),
+
+      tx: arr(d.tx).map(function(x){
+        return {
+          id:       String(x.id || uid()),
+          type:     x.type === 'income' ? 'income' : 'expense',
+          amount:   Math.abs(Number(x.amount) || 0),
+          category: String(x.category || 'Прочее').trim() || 'Прочее',
+          date:     String(x.date || '').slice(0,10),
+          note:     String(x.note || '')
+        };
+      }).filter(function(x){ return x.amount > 0 && isDate(x.date); }),
+
+      totals: (d.totals && typeof d.totals === 'object') ? {
+        label:   String(d.totals.label || ''),
+        income:  Math.abs(Number(d.totals.income)  || 0),
+        expense: Math.abs(Number(d.totals.expense) || 0)
+      } : null
+    };
+  }
+
+  function sync(manual){
+    if (!API_URL){ setSync('', 'демо-режим'); return; }
+    if (syncing) return;
+    syncing = true;
+    setSync('load', 'обновление…');
+
+    var done = function(){ syncing = false; };
+
+    fetch(API_URL, {
+      method:  'POST',
+      cache:   'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        token:    API_TOKEN,
+        initData: (tg && tg.initData) ? tg.initData : ''
+      })
+    })
+    .then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(d){
+      if (Array.isArray(d)) d = d[0] || {};
+      if (!d || typeof d !== 'object') throw new Error('bad payload');
+      if (d.error) throw new Error(String(d.error));
+
+      var n = normalize(d);
+      state.tasks  = n.tasks;
+      state.events = n.events;
+      state.tx     = n.tx;
+      state.totals = n.totals;
+      state.syncedAt = Date.now();
+      saveUI();
+      renderAll();
+      setSync('ok', 'обновлено ' + hhmm(state.syncedAt));
+      if (manual) haptic('success');
+      done();
+    })
+    .catch(function(err){
+      setSync('err', state.syncedAt
+        ? 'данные от ' + hhmm(state.syncedAt)
+        : 'нет связи');
+      if (manual) haptic('error');
+      if (window.console) console.warn('[Ритм] sync failed:', err);
+      done();
+    });
+  }
+
+  if (refreshBtn) refreshBtn.addEventListener('click', function(){ haptic('light'); sync(true); });
+
+  /* обновляем, когда пользователь возвращается в приложение */
+  document.addEventListener('visibilitychange', function(){
+    if (!document.hidden) sync(false);
+  });
+  /* и фоново, пока приложение открыто */
+  setInterval(function(){
+    if (!document.hidden) sync(false);
+  }, Math.max(15, Number(CFG.autoRefreshSec) || 60) * 1000);
+
   /* ---------- init ---------- */
   function renderAll(){
     renderHeader();
@@ -727,5 +936,6 @@
     renderFinance();
   }
   renderAll();
+  sync(false);
 })();
 </script>
