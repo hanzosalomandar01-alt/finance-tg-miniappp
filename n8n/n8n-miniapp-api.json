@@ -1,0 +1,290 @@
+{
+  "name": "MiniApp API (Ритм)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "miniapp-data",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -440,
+        300
+      ],
+      "webhookId": "a1000000-0000-4000-8000-0000000000ff"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c1",
+              "name": "sheetId",
+              "value": "ВСТАВЬ_ID_ТАБЛИЦЫ",
+              "type": "string"
+            },
+            {
+              "id": "c2",
+              "name": "svodRange",
+              "value": "Свод!A1:Z200",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -220,
+        300
+      ],
+      "notes": "ID таблицы «Бюджет Т1» — задаётся один раз здесь"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "task": "@default",
+        "returnAll": true,
+        "additionalFields": {
+          "showCompleted": true,
+          "showHidden": true
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Google Tasks",
+      "type": "n8n-nodes-base.googleTasks",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "primary",
+          "mode": "list",
+          "cachedResultName": "primary"
+        },
+        "returnAll": true,
+        "options": {
+          "timeMin": "={{ $now.minus({ days: 30 }).toISO() }}",
+          "timeMax": "={{ $now.plus({ days: 180 }).toISO() }}",
+          "singleEvents": true,
+          "orderBy": "startTime"
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Google Calendar",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1,
+      "position": [
+        220,
+        300
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.sheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Транзакции",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        300
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "notes": "Построчные операции. Нужны только при financeSource=\"transactions\""
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================================================\n//  MiniApp API — сборка данных для мини-приложения \"Ритм\"\n//  Режим Code-ноды: \"Run Once for All Items\"\n// ============================================================================\n\n// ---------- 0. НАСТРОЙКИ ----------\n// BOT_TOKEN вписывается ТОЛЬКО здесь, в n8n. Никогда не коммить его в git.\nconst BOT_TOKEN      = 'ВСТАВЬ_ТОКЕН_БОТА';  // от @BotFather\nconst TOKEN          = '';                   // доп. секрет; '' = не проверять\nconst ALLOWED_TG_IDS = [];                   // напр. [123456789]; пусто = любой юзер бота\nconst MAX_AGE_SEC    = 24 * 60 * 60;\n\n// ---------- 1. АВТОРИЗАЦИЯ ПО ПОДПИСИ TELEGRAM ----------\nconst body = ($('Webhook').first().json.body) || {};\n\nfunction checkAuth() {\n  if (TOKEN && body.token !== TOKEN) return 'unauthorized';\n\n  if (!BOT_TOKEN || BOT_TOKEN.indexOf('ВСТАВЬ') === 0) return 'bot token not set';\n\n  let nodeCrypto;\n  try { nodeCrypto = require('crypto'); }\n  catch (e) { return 'crypto unavailable'; }\n\n  const initData = String(body.initData || '');\n  if (!initData) return 'no initData';\n\n  const params = new URLSearchParams(initData);\n  const hash = params.get('hash');\n  if (!hash) return 'no hash';\n  params.delete('hash');\n\n  const dataCheckString = [...params.entries()]\n    .sort((a, b) => (a[0] < b[0] ? -1 : 1))\n    .map(([k, v]) => k + '=' + v)\n    .join('\\n');\n\n  const secretKey = nodeCrypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();\n  const calcHash  = nodeCrypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');\n  if (calcHash !== hash) return 'bad signature';\n\n  const authDate = Number(params.get('auth_date') || 0);\n  if (!authDate || Date.now() / 1000 - authDate > MAX_AGE_SEC) return 'expired';\n\n  if (ALLOWED_TG_IDS.length) {\n    let tgId = null;\n    try { tgId = JSON.parse(params.get('user') || '{}').id; } catch (e) { /* ignore */ }\n    if (!ALLOWED_TG_IDS.includes(Number(tgId))) return 'forbidden';\n  }\n\n  return null;\n}\n\nconst denied = checkAuth();\n\nif (denied) return [{ json: { error: denied } }];\n\n// ---------- 2. ХЕЛПЕРЫ ----------\nconst pad = (n) => String(n).padStart(2, '0');\n\n// безопасно читаем выход другой ноды: если она упала/не выполнилась — пустой массив\nconst from = (name) => {\n  try { return $(name).all().map((i) => i.json).filter(Boolean); }\n  catch (e) { return []; }\n};\n\nfunction toISODate(v) {\n  if (v === null || v === undefined || v === '') return null;\n  if (typeof v === 'number') {                        // серийный номер даты из Sheets\n    const d = new Date(Date.UTC(1899, 11, 30) + v * 86400000);\n    return isNaN(d) ? null : d.toISOString().slice(0, 10);\n  }\n  const s = String(v).trim();\n  let m = s.match(/^(\\d{4})-(\\d{2})-(\\d{2})/);                 // 2026-08-27\n  if (m) return m[1] + '-' + m[2] + '-' + m[3];\n  m = s.match(/^(\\d{1,2})[.\\/-](\\d{1,2})[.\\/-](\\d{4})/);       // 27.08.2026\n  if (m) return m[3] + '-' + pad(m[2]) + '-' + pad(m[1]);\n  const d = new Date(s);\n  if (isNaN(d)) return null;\n  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());\n}\n\nfunction toNumber(v) {\n  if (typeof v === 'number') return v;\n  if (v === null || v === undefined) return 0;\n  const s = String(v)\n    .replace(/[\\s\\u00A0]/g, '')\n    .replace(/[^\\d.,-]/g, '')\n    .replace(',', '.');\n  const n = parseFloat(s);\n  return isNaN(n) ? 0 : n;\n}\n\n// ищем значение в строке таблицы по возможным названиям колонки\nfunction col(row, names) {\n  for (const key of Object.keys(row)) {\n    const k = key.toLowerCase().trim();\n    if (names.some((n) => k === n || k.includes(n))) {\n      const v = row[key];\n      if (v !== '' && v !== null && v !== undefined) return v;\n    }\n  }\n  return null;\n}\n\n// ---------- 3. ЗАДАЧИ (Google Tasks) ----------\nconst RE_HIGH = /(!{2,}|срочн|важн|высок|high|urgent|\\bp1\\b)/i;\nconst RE_LOW  = /(низк|low|потом|когда-нибудь|\\bp3\\b)/i;\n\nconst tasks = from('Google Tasks')\n  .filter((t) => t.id && t.title)\n  .map((t) => {\n    const hay = String(t.title || '') + ' ' + String(t.notes || '');\n    let priority = 'med';\n    if (RE_HIGH.test(hay)) priority = 'high';\n    else if (RE_LOW.test(hay)) priority = 'low';\n    return {\n      id: String(t.id),\n      text: String(t.title).replace(/\\s*!{1,3}\\s*$/, '').trim(),\n      done: t.status === 'completed',\n      priority,\n      due: t.due ? String(t.due).slice(0, 10) : null,\n    };\n  });\n\n// ---------- 4. СОБЫТИЯ (Google Calendar) ----------\nconst events = from('Google Calendar')\n  .filter((e) => e.id && e.status !== 'cancelled')\n  .map((e) => {\n    const s = e.start || {};\n    let date = '', time = '';\n    if (s.dateTime) {                     // берём строкой, чтобы не сбить таймзону\n      date = String(s.dateTime).slice(0, 10);\n      time = String(s.dateTime).slice(11, 16);\n    } else if (s.date) {                  // событие на весь день\n      date = String(s.date).slice(0, 10);\n    }\n    return {\n      id: String(e.id),\n      title: String(e.summary || 'Без названия'),\n      date,\n      time,\n      notes: String(e.description || ''),\n    };\n  })\n  .filter((e) => /^\\d{4}-\\d{2}-\\d{2}$/.test(e.date));\n\n// ---------- 5. ФИНАНСЫ (Google Sheets) ----------\nconst C = {\n  date:    ['дата', 'date', 'когда'],\n  type:    ['тип', 'type', 'операц', 'вид'],\n  amount:  ['сумма', 'amount', 'значение', 'value'],\n  income:  ['доход', 'income', 'приход', 'поступлен'],\n  expense: ['расход', 'expense', 'трата', 'затрат'],\n  cat:     ['категор', 'category', 'статья'],\n  note:    ['коммент', 'note', 'описан', 'заметк', 'примечан', 'назначен'],\n};\n\nconst tx = [];\nfor (const row of from('Google Sheets')) {\n  if (typeof row !== 'object') continue;\n\n  const date = toISODate(col(row, C.date));\n  if (!date) continue;\n\n  let type = null;\n  const rawType = col(row, C.type);\n  if (rawType) {\n    const t = String(rawType).toLowerCase();\n    if (C.income.some((w) => t.includes(w))) type = 'income';\n    else if (C.expense.some((w) => t.includes(w))) type = 'expense';\n  }\n  let amount = toNumber(col(row, C.amount));\n\n  // запасной вариант: отдельные колонки \"Доход\" и \"Расход\"\n  if (!type || !amount) {\n    const exp = toNumber(col(row, C.expense));\n    const inc = toNumber(col(row, C.income));\n    if (exp) { type = 'expense'; amount = exp; }\n    else if (inc) { type = 'income'; amount = inc; }\n  }\n  if (!type) type = amount < 0 ? 'expense' : 'income';\n\n  amount = Math.abs(amount);\n  if (!amount) continue;\n\n  tx.push({\n    id: date + '-' + tx.length,\n    type,\n    amount,\n    category: String(col(row, C.cat) || 'Прочее').trim() || 'Прочее',\n    date,\n    note: String(col(row, C.note) || '').trim(),\n  });\n}\n\n// ---------- 5b. ИТОГИ ИЗ ЛИСТА «СВОД» ----------\n// Сырая сетка ячеек: [[\"\", \"Август\"], [\"Доход\",\"Расход\"], [0, 37]]\n// Свод принимается в двух видах:\n//   1) нода Google Sheets с именем «Свод»  -> объекты { Доход: 0, Расход: 37 }\n//   2) HTTP Request «Свод (raw)»          -> сырая сетка { values: [[...]] }\nlet grid = [];\nlet svodSource = 'none';        // откуда взялся Свод — видно в debug ответа\nlet svodRawKeys = [];           // что вообще вернула нода\n\ntry {\n  const v = $('Свод (raw)').first().json.values;\n  if (Array.isArray(v) && v.length) { grid = v; svodSource = 'http'; }\n} catch (e) { /* такой ноды нет — нормально */ }\n\nif (!grid.length) {\n  const all = from('Свод');\n  svodRawKeys = all.length ? Object.keys(all[0]) : [];\n  const rows = all.filter((r) => r && typeof r === 'object' && Object.keys(r).length);\n  if (rows.length) {\n    const keys = Object.keys(rows[0]).filter((k) => k !== 'row_number');\n    grid = [keys].concat(rows.map((r) => keys.map((k) => r[k])));\n    svodSource = 'sheets';\n  }\n}\n\nconst cellAt = (r, c) => {\n  const row = grid[r];\n  return Array.isArray(row) ? row[c] : undefined;\n};\nconst cellText = (v) => String(v === null || v === undefined ? '' : v).toLowerCase().trim();\n\nfunction isNumeric(v) {\n  if (v === null || v === undefined || v === '') return false;\n  if (typeof v === 'number') return !isNaN(v);\n  return /\\d/.test(String(v)) && !isNaN(toNumber(v));\n}\n\n// ищем ячейку-подпись и берём ближайшее число под ней (или справа)\nfunction findTotal(words) {\n  for (let r = 0; r < grid.length; r++) {\n    const row = Array.isArray(grid[r]) ? grid[r] : [];\n    for (let c = 0; c < row.length; c++) {\n      const cell = cellText(row[c]);\n      if (!cell || !words.some((w) => cell.indexOf(w) !== -1)) continue;\n\n      for (let rr = r + 1; rr < Math.min(grid.length, r + 8); rr++) {\n        const v = cellAt(rr, c);\n        if (isNumeric(v)) return toNumber(v);\n      }\n      for (let cc = c + 1; cc < Math.min(row.length, c + 8); cc++) {\n        if (isNumeric(row[cc])) return toNumber(row[cc]);\n      }\n    }\n  }\n  return 0;\n}\n\n// подпись периода — первая ячейка с названием месяца\nfunction findPeriodLabel() {\n  const months = ['январ', 'феврал', 'март', 'апрел', 'май', 'мая',\n                  'июн', 'июл', 'август', 'сентябр', 'октябр', 'ноябр', 'декабр'];\n  for (const row of grid) {\n    for (const cell of (Array.isArray(row) ? row : [])) {\n      const s = cellText(cell);\n      if (s && months.some((m) => s.indexOf(m) === 0)) return String(cell).trim();\n    }\n  }\n  return '';\n}\n\nconst totals = grid.length ? {\n  label:   findPeriodLabel(),\n  income:  Math.abs(findTotal(['доход', 'income'])),\n  expense: Math.abs(findTotal(['расход', 'expense'])),\n} : null;\n\n// ---------- 6. ОТВЕТ ----------\nreturn [{\n  json: {\n    tasks,\n    events,\n    tx,\n    totals,\n    generatedAt: new Date().toISOString(),\n    counts: {\n      tasks: tasks.length,\n      events: events.length,\n      tx: tx.length,\n      svodRows: grid.length,\n    },\n    debug: {\n      svodSource,                                  // none | sheets | http\n      svodHeader: grid.length ? grid[0] : [],      // строка заголовков\n      svodRawKeys,                                 // что отдала нода «Свод»\n    },\n  },\n}];\n"
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.sheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Свод",
+          "mode": "name"
+        },
+        "options": {
+          "dataLocationOnSheet": {
+            "values": {
+              "rangeDefinition": "specifyRange",
+              "headerRow": 3,
+              "firstDataRow": 4
+            }
+          }
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "Свод",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        660,
+        300
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "notes": "Лист «Свод». Заголовки Доход/Расход в строке 3, суммы в строке 4"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Google Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Tasks": {
+      "main": [
+        [
+          {
+            "node": "Google Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Свод",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Свод": {
+      "main": [
+        [
+          {
+            "node": "Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

@@ -1,0 +1,205 @@
+{
+  "name": "MiniApp Action (Ритм)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "miniapp-action",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "b1000000-0000-4000-8000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        300
+      ],
+      "webhookId": "b1000000-0000-4000-8000-0000000000ff"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================================================\n//  MiniApp Action — отметка задачи выполненной/невыполненной\n//  Режим Code-ноды: \"Run Once for All Items\"\n// ============================================================================\n\n// ---------- 0. НАСТРОЙКИ ----------\n// BOT_TOKEN вписывается ТОЛЬКО здесь, в n8n. Никогда не коммить его в git.\nconst BOT_TOKEN      = 'ВСТАВЬ_ТОКЕН_БОТА';  // от @BotFather\nconst TOKEN          = '';                   // доп. секрет; '' = не проверять\nconst ALLOWED_TG_IDS = [];                   // напр. [123456789]; пусто = любой юзер бота\nconst MAX_AGE_SEC    = 24 * 60 * 60;\n\n// ---------- 1. АВТОРИЗАЦИЯ ПО ПОДПИСИ TELEGRAM ----------\nconst body = ($('Webhook').first().json.body) || {};\n\nfunction checkAuth() {\n  if (TOKEN && body.token !== TOKEN) return 'unauthorized';\n\n  if (!BOT_TOKEN || BOT_TOKEN.indexOf('ВСТАВЬ') === 0) return 'bot token not set';\n\n  let nodeCrypto;\n  try { nodeCrypto = require('crypto'); }\n  catch (e) { return 'crypto unavailable'; }\n\n  const initData = String(body.initData || '');\n  if (!initData) return 'no initData';\n\n  const params = new URLSearchParams(initData);\n  const hash = params.get('hash');\n  if (!hash) return 'no hash';\n  params.delete('hash');\n\n  const dataCheckString = [...params.entries()]\n    .sort((a, b) => (a[0] < b[0] ? -1 : 1))\n    .map(([k, v]) => k + '=' + v)\n    .join('\\n');\n\n  const secretKey = nodeCrypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();\n  const calcHash  = nodeCrypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');\n  if (calcHash !== hash) return 'bad signature';\n\n  const authDate = Number(params.get('auth_date') || 0);\n  if (!authDate || Date.now() / 1000 - authDate > MAX_AGE_SEC) return 'expired';\n\n  if (ALLOWED_TG_IDS.length) {\n    let tgId = null;\n    try { tgId = JSON.parse(params.get('user') || '{}').id; } catch (e) { /* ignore */ }\n    if (!ALLOWED_TG_IDS.includes(Number(tgId))) return 'forbidden';\n  }\n\n  return null;\n}\n\nconst denied = checkAuth();\n\nif (denied) return [{ json: { ok: false, error: denied } }];\nif (body.action !== 'task.setDone') {\n  return [{ json: { ok: false, error: 'unknown action' } }];\n}\n\nconst taskId = String(body.id || '').trim();\nif (!taskId) {\n  return [{ json: { ok: false, error: 'no task id' } }];\n}\n\nreturn [{\n  json: {\n    ok: true,\n    taskId,\n    status: body.done ? 'completed' : 'needsAction',\n  },\n}];\n"
+      },
+      "id": "b1000000-0000-4000-8000-000000000002",
+      "name": "Auth",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b1000000-0000-4000-8000-000000000003",
+      "name": "Разрешено?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "task": "@default",
+        "taskId": "={{ $json.taskId }}",
+        "updateFields": {
+          "status": "={{ $json.status }}"
+        }
+      },
+      "id": "b1000000-0000-4000-8000-000000000004",
+      "name": "Google Tasks",
+      "type": "n8n-nodes-base.googleTasks",
+      "typeVersion": 1,
+      "position": [
+        440,
+        200
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Меняет статус задачи. Если Cossmo пишет в другой список — поменяй @default"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: !$json.error, id: $('Auth').first().json.taskId, done: $('Auth').first().json.status === 'completed', error: $json.error ? String($json.error) : undefined }) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "b1000000-0000-4000-8000-000000000005",
+      "name": "Ответ OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error || 'forbidden' }) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "b1000000-0000-4000-8000-000000000006",
+      "name": "Ответ Ошибка",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth": {
+      "main": [
+        [
+          {
+            "node": "Разрешено?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Разрешено?": {
+      "main": [
+        [
+          {
+            "node": "Google Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ответ Ошибка",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Tasks": {
+      "main": [
+        [
+          {
+            "node": "Ответ OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
