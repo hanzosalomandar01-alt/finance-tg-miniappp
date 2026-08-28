@@ -436,6 +436,11 @@ window.RITM_CONFIG = {
   apiToken:       "0dmNcaeyy79Nfkjhm4fMwPZXyz0E3WG2",
   autoRefreshSec: 60,
 
+  // Адрес второго вебхука — воркфлоу "MiniApp Action".
+  // Нужен, чтобы галочка в приложении сохранялась в Google Tasks.
+  // Пустой — отметки остаются только в браузере и слетают при обновлении.
+  actionUrl:      "https://hanzo17.app.n8n.cloud/webhook/miniapp-action",
+
   // "svod"         — цифры берутся из листа «Свод» (Доход / Расход)
   // "transactions" — считаются из листа «Транзакции»,
   //                  тогда работают ещё периоды, категории и список операций
@@ -513,6 +518,9 @@ window.RITM_CONFIG = {
   var API_URL = String(CFG.apiUrl || '').trim();
   var API_TOKEN = String(CFG.apiToken || '');
   var FIN_SOURCE = (CFG.financeSource === 'transactions') ? 'transactions' : 'svod';
+  var ACTION_URL = String(CFG.actionUrl || '').trim();
+  var pending = {};                      // задачи с незавершённой записью
+  function hasPending(){ for (var k in pending){ if (pending[k]) return true; } return false; }
 
   function useTotals(){ return FIN_SOURCE === 'svod' && !!state.totals; }
 
@@ -614,12 +622,54 @@ window.RITM_CONFIG = {
 
   document.getElementById('taskList').addEventListener('click', function(e){
     var el = e.target.closest('.task'); if(!el) return;
-    var id = el.dataset.id;
-    var task = state.tasks.find(function(t){return t.id===id;});
-    if (!task) return;
-    task.done = !task.done;
-    saveUI(); haptic(task.done ? 'success' : 'light'); renderTasks(); renderHeader();
+    var task = state.tasks.find(function(t){ return t.id === el.dataset.id; });
+    if (!task || pending[task.id]) return;
+    setTaskDone(task, !task.done);
   });
+
+  /* Отметка выполнения: сразу меняем UI, параллельно пишем в Google Tasks.
+     Если сервер не принял — откатываем обратно, чтобы не врать. */
+  function setTaskDone(task, next){
+    var prev = task.done;
+    task.done = next;
+    saveUI(); haptic(next ? 'success' : 'light'); renderTasks(); renderHeader();
+
+    if (!ACTION_URL) return;             // бэкенд не настроен — только локально
+
+    pending[task.id] = true;
+    setSync('load', 'сохранение…');
+
+    fetch(ACTION_URL, {
+      method:  'POST',
+      cache:   'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        token:    API_TOKEN,
+        initData: (tg && tg.initData) ? tg.initData : '',
+        action:   'task.setDone',
+        id:       task.id,
+        done:     next
+      })
+    })
+    .then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(d){
+      if (Array.isArray(d)) d = d[0] || {};
+      if (!d || d.ok !== true) throw new Error((d && d.error) || 'not saved');
+      setSync('ok', next ? 'отмечено' : 'снята отметка');
+      pending[task.id] = false;
+    })
+    .catch(function(err){
+      task.done = prev;                  // откат
+      saveUI(); renderTasks(); renderHeader();
+      setSync('err', 'не сохранилось');
+      haptic('error');
+      pending[task.id] = false;
+      if (window.console) console.warn('[Ритм] task update failed:', err);
+    });
+  }
 
   function fmtShortDate(iso){
     var d = parseISO(iso);
@@ -869,6 +919,7 @@ window.RITM_CONFIG = {
   function sync(manual){
     if (!API_URL){ setSync('', 'демо-режим'); return; }
     if (syncing) return;
+    if (!manual && hasPending()) return;   // идёт запись — не перезатираем её старыми данными
     syncing = true;
     setSync('load', 'обновление…');
 
